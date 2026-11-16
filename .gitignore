@@ -1,0 +1,17 @@
+/build/
+/dist/
+/extracted/
+/generated/
+/logs/
+/userdata/
+/PROGRESS.md
+/TECHNICAL_RESEARCH.md
+__pycache__/
+*.3ds
+*.cci
+*.cxi
+*.cia
+*.bcfnt
+*.sav
+*.key
+*.rar
