@@ -41,7 +41,8 @@ def frontend(source):
         "            SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);",
         """            SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN, true);
 #ifdef __linux__
-            SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_VULKAN_REQUIRE_HARDWARE_ACCELERATION_BOOLEAN, true);
+            SDL_SetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_VULKAN_REQUIRE_HARDWARE_ACCELERATION_BOOLEAN,
+                                   !std::getenv("KIRBY_ALLOW_SOFTWARE_VULKAN"));
 #endif""")
     source = replace(source,
         "    open_audio();\n    if (audio_stream) SDL_SetAudioStreamGain(audio_stream, float(s.volume) / 100.0f);",
@@ -253,6 +254,8 @@ def frontend_presentation(source):
     source = replace(source, '#include "settings.h"', '''#include "settings.h"
 #ifdef _WIN32
 #include "resolution_menu.h"
+#else
+#include "linux_upscaling.h"
 #endif
 #include <chrono>
 #include <condition_variable>''')
@@ -273,7 +276,16 @@ void run(void (*start)""")
     source = replace(source, "    pica::set_resolution_scale(s.resolution);", """#ifdef _WIN32
     ResolutionMenu resolution_menu(window, s, pica::gpu::active());
     resolution_menu.set_visible(!(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
+#else
+    LinuxUpscaling resolution_menu(s, pica::gpu::active());
 #endif
+    const auto menu_height = [&] {
+#ifdef _WIN32
+        return 0.0f;
+#else
+        return resolution_menu.height();
+#endif
+    };
     pica::set_resolution_scale(s.resolution);""")
     source = replace(source, """                    s.fullscreen = !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN);
                     SDL_SetWindowFullscreen(window, s.fullscreen);""", """                    const bool fullscreen = !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN);
@@ -284,7 +296,13 @@ void run(void (*start)""")
                     s.fullscreen = (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN) != 0;
 #ifdef _WIN32
                     resolution_menu.set_visible(!s.fullscreen);
+#else
+                    relayout();
 #endif""")
+    source = source.replace("int(layout.h), SDL_LOGICAL_PRESENTATION_LETTERBOX);",
+                            "int(layout.h + menu_height()), SDL_LOGICAL_PRESENTATION_LETTERBOX);")
+    source = replace(source, "SDL_SetWindowSize(window, ww, int(float(ww) * layout.h / layout.w));",
+                     "SDL_SetWindowSize(window, ww, int(float(ww) * (layout.h + menu_height()) / layout.w));")
     source = replace(source, "    auto show_message = [&](std::string text) { message = std::move(text), message_until = SDL_GetTicks() + 2500; };",
         """    bool redraw_requested = true;
     bool overlay_was_visible = false;
@@ -335,7 +353,31 @@ void run(void (*start)""")
             }
             retired_gpu_frames.clear();
             for (int i = 0; i < 2; i++) {""")
-    source = replace(source, "        if (!message.empty() && SDL_GetTicks() < message_until) {", "        if (show_overlay) {")
+    source = replace(source, "            case SDL_EVENT_KEY_DOWN:", """#ifndef _WIN32
+            case SDL_EVENT_MOUSE_BUTTON_DOWN:
+                if (e.button.button == SDL_BUTTON_LEFT) {
+                    float x, y;
+                    if (SDL_RenderCoordinatesFromWindow(renderer, e.button.x, e.button.y, &x, &y) &&
+                        resolution_menu.click(x, y))
+                        redraw_requested = true;
+                }
+                break;
+#endif
+            case SDL_EVENT_KEY_DOWN:""")
+    source = replace(source, "            if (layout.touch_at(lx, ly, tx, ty)) {",
+                     "            if (layout.touch_at(lx, ly - menu_height(), tx, ty)) {")
+    source = replace(source, "            SDL_RenderTexture(renderer, t, &src, &layout.rect[i]);",
+        """            SDL_FRect destination = layout.rect[i];
+            destination.y += menu_height();
+            SDL_RenderTexture(renderer, t, &src, &destination);""")
+    source = replace(source, "                SDL_RenderRect(renderer, &layout.rect[i]);",
+                     "                SDL_RenderRect(renderer, &destination);")
+    source = replace(source, "        if (!message.empty() && SDL_GetTicks() < message_until) {",
+        """#ifndef _WIN32
+        resolution_menu.draw(renderer, layout.w);
+#endif
+        if (show_overlay) {""")
+    source = replace(source, "y = layout.h - th - 8;", "y = menu_height() + layout.h - th - 8;")
     source = replace(source, "                    shown_gpu[i] = gpu_texture(gpu_frame[i], frame_width[i], frame_height[i]);",
         """                    shown_gpu[i] = gpu_texture(gpu_frame[i], frame_width[i], frame_height[i]);
                     if (i == 0 && log_presentation) {
